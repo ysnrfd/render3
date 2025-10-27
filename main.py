@@ -71,8 +71,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• `/start` - شروع ربات و نمایش پیام خوشامدگویی\n"
         "• `/help` - نمایش این راهنما\n\n"
         "🛡️ **دستورات مدیریت گروه (فقط برای ادمین‌ها):**\n"
-        "• `/ban` - بن کردن کاربر با ریپلای روی پیام او\n"
-        "• `/unban` - آنبن کردن کاربر\n"
+        "• `/ban` - مسدود کردن ارسال پیام کاربر (با ریپلای)\n"
+        "• `/unban` - رفع مسدودیت ارسال پیام کاربر (با ریپلای)\n"
         "• `/mute` - بی‌صدا کردن کاربر با ریپلای روی پیام او\n"
         "• `/unmute` - درآوردن از حالت بی‌صدا\n"
         "• `/warn` - اخطار دادن به کاربر با ریپلای روی پیام او\n"
@@ -97,13 +97,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     chat_id = update.effective_chat.id
     message = update.message
     
-    # بررسی مسدود بودن کاربر
+    # بررسی مسدود بودن کاربر (برای بن‌های سراسری از پنل ادمین)
     if data_manager.is_user_banned(user_id):
-        logger.info(f"Banned user {user_id} tried to send a message in group {chat_id}.")
+        logger.info(f"Globally banned user {user_id} tried to send a message in group {chat_id}.")
         try:
             await message.delete()
         except Exception as e:
-            logger.error(f"Failed to delete message from banned user: {e}")
+            logger.error(f"Failed to delete message from globally banned user: {e}")
         return
     
     # بررسی حالت نگهداری (فقط برای کاربران عادی)
@@ -133,7 +133,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 # --- هندلرهای مدیریت گروه ---
 async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """بن کردن کاربر با ریپلای روی پیام او."""
+    """مسدود کردن ارسال پیام کاربر (بدون اخراج از گروه)."""
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
     
@@ -150,7 +150,7 @@ async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     
     # بررسی اینکه آیا پیام ریپلای شده است
     if not update.message.reply_to_message:
-        await update.message.reply_text("⚠️ لطفاً روی پیام کاربری که می‌خواهید بن کنید ریپلای کنید.")
+        await update.message.reply_text("⚠️ لطفاً روی پیام کاربری که می‌خواهید مسدود کنید ریپلای کنید.")
         return
     
     target_user = update.message.reply_to_message.from_user
@@ -160,7 +160,7 @@ async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     try:
         target_chat_member = await context.bot.get_chat_member(chat_id, target_user_id)
         if target_chat_member.status in ['administrator', 'creator']:
-            await update.message.reply_text("🛡️ شما نمی‌توانید یک ادمین را بن کنید!")
+            await update.message.reply_text("🛡️ شما نمی‌توانید یک ادمین را مسدود کنید!")
             return
     except TelegramError as e:
         logger.error(f"Failed to check target admin status for ban command: {e}")
@@ -168,29 +168,42 @@ async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
     
     try:
-        await context.bot.ban_chat_member(chat_id, target_user_id)
-        data_manager.ban_user(target_user_id)
+        # مسدود کردن کامل ارسال پیام
+        await context.bot.restrict_chat_member(
+            chat_id=chat_id,
+            user_id=target_user_id,
+            permissions={
+                'can_send_messages': False,
+                'can_send_media_messages': False,
+                'can_send_polls': False,
+                'can_send_other_messages': False,
+                'can_add_web_page_previews': False,
+                'can_change_info': False,
+                'can_invite_users': False,
+                'can_pin_messages': False
+            }
+        )
         
         await update.message.reply_text(
-            f"✅ کاربر {target_user.mention_html()} با موفقیت از گروه بن شد.",
+            f"🔇 کاربر {target_user.mention_html()} مسدود شد و دیگر نمی‌تواند در گروه پیام ارسال کند.",
             parse_mode='HTML'
         )
         
-        # ارسال پیام به کاربر بن شده
+        # ارسال پیام به کاربر مسدود شده
         try:
             await context.bot.send_message(
                 chat_id=target_user_id,
-                text=f"⛔️ شما از گروه {update.effective_chat.title} بن شدید و دیگر نمی‌توانید در آن پیام ارسال کنید."
+                text=f"🔇 شما توسط ادمین گروه {update.effective_chat.title} مسدود شدید و دیگر نمی‌توانید پیام ارسال کنید."
             )
         except Exception as e:
             logger.warning(f"Could not send ban notification to user {target_user_id}: {e}")
             
     except Exception as e:
         logger.error(f"Error banning user {target_user_id}: {e}")
-        await update.message.reply_text(f"❌ خطا در بن کردن کاربر: {e}")
+        await update.message.reply_text(f"❌ خطا در مسدود کردن کاربر: {e}")
 
 async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """آنبن کردن کاربر."""
+    """رفع مسدودیت ارسال پیام کاربر."""
     chat_id = update.effective_chat.id
     user_id = update.effective_user.id
     
@@ -207,33 +220,43 @@ async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     # بررسی اینکه آیا پیام ریپلای شده است
     if not update.message.reply_to_message:
-        await update.message.reply_text("⚠️ لطفاً روی پیام کاربری که می‌خواهید آنبن کنید ریپلای کنید.")
+        await update.message.reply_text("⚠️ لطفاً روی پیام کاربری که می‌خواهید مسدودیتش را بردارید ریپلای کنید.")
         return
     
     target_user = update.message.reply_to_message.from_user
     target_user_id = target_user.id
     
     try:
-        await context.bot.unban_chat_member(chat_id, target_user_id)
-        data_manager.unban_user(target_user_id)
+        # بازگرداندن تمام دسترسی‌های ارسال پیام
+        await context.bot.restrict_chat_member(
+            chat_id=chat_id,
+            user_id=target_user_id,
+            permissions={
+                'can_send_messages': True,
+                'can_send_media_messages': True,
+                'can_send_polls': True,
+                'can_send_other_messages': True,
+                'can_add_web_page_previews': True
+            }
+        )
         
         await update.message.reply_text(
-            f"✅ کاربر {target_user.mention_html()} با موفقیت آنبن شد.",
+            f"🔊 مسدودیت کاربر {target_user.mention_html()} برداشته شد و می‌تواند دوباره پیام ارسال کند.",
             parse_mode='HTML'
         )
         
-        # ارسال پیام به کاربر آنبن شده
+        # ارسال پیام به کاربر برای رفع مسدودیت
         try:
             await context.bot.send_message(
                 chat_id=target_user_id,
-                text=f"✅ بن شما از گروه {update.effective_chat.title} برداشته شد. می‌توانید دوباره به گروه بازگردید."
+                text=f"🔊 مسدودیت شما در گروه {update.effective_chat.title} برداشته شد. می‌توانید دوباره پیام ارسال کنید."
             )
         except Exception as e:
             logger.warning(f"Could not send unban notification to user {target_user_id}: {e}")
             
     except Exception as e:
         logger.error(f"Error unbanning user {target_user_id}: {e}")
-        await update.message.reply_text(f"❌ خطا در آنبن کردن کاربر: {e}")
+        await update.message.reply_text(f"❌ خطا در رفع مسدودیت کاربر: {e}")
 
 async def mute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """بی‌صدا کردن کاربر با ریپلای روی پیام او."""
@@ -363,14 +386,24 @@ async def warn_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if user_warnings == 1:
         warn_text = f"⚠️ {target_user.mention_html()} این اولین اخطار شماست. لطفاً قوانین گروه را رعایت کنید."
     elif user_warnings == 2:
-        warn_text = f"⚠️ {target_user.mention_html()} این دومین اخطار شماست. در صورت تکرار، از گروه بن خواهید شد."
+        warn_text = f"⚠️ {target_user.mention_html()} این دومین اخطار شماست. در صورت تکرار، از ارسال پیام مسدود خواهید شد."
     else:
-        warn_text = f"⚠️ {target_user.mention_html()} این سومین اخطار شماست. به دلیل تخلف مکرر از گروه بن شدید."
+        warn_text = f"⚠️ {target_user.mention_html()} این سومین اخطار شماست. به دلیل تخلف مکرر از ارسال پیام مسدود شدید."
         try:
-            await context.bot.ban_chat_member(chat_id, target_user_id)
-            data_manager.ban_user(target_user_id)
+            # مسدود کردن کامل ارسال پیام به جای اخراج
+            await context.bot.restrict_chat_member(
+                chat_id=chat_id,
+                user_id=target_user_id,
+                permissions={
+                    'can_send_messages': False,
+                    'can_send_media_messages': False,
+                    'can_send_polls': False,
+                    'can_send_other_messages': False,
+                    'can_add_web_page_previews': False,
+                }
+            )
         except Exception as e:
-            logger.error(f"Error banning user after 3 warnings: {e}")
+            logger.error(f"Error restricting user after 3 warnings: {e}")
     
     try:
         await update.message.reply_text(warn_text, parse_mode='HTML')
