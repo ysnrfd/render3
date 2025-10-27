@@ -7,14 +7,10 @@ import time
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from telegram.error import TelegramError
-from keep_alive import start_keep_alive
 
 # وارد کردن مدیر داده‌ها و پنل ادمین
 import data_manager
 import admin_panel
-
-# شروع سرویس نگه داشتن ربات فعال
-start_keep_alive()
 
 # --- بهبود لاگینگ ---
 logging.basicConfig(
