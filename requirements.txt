@@ -1,0 +1,10 @@
+python-telegram-bot[job-queue]
+python-telegram-bot[webhooks]
+openai
+requests
+huggingface_hub
+aiohttp
+httpx[http2]
+matplotlib
+pandas
+psutil
