@@ -6,6 +6,7 @@ import asyncio
 import time
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.error import TelegramError
 from keep_alive import start_keep_alive
 
 # وارد کردن مدیر داده‌ها و پنل ادمین
@@ -34,6 +35,18 @@ except Exception as e:
 # --- دیکشنری برای مدیریت وظایف پس‌زمینه هر کاربر ---
 user_tasks = {}
 
+# --- توابع کمکی برای مدیریت وظایف ---
+def _cleanup_task(task: asyncio.Task, user_id: int):
+    if user_id in user_tasks and user_tasks[user_id] == task:
+        del user_tasks[user_id]
+        logger.info(f"Cleaned up finished task for user {user_id}.")
+    try:
+        exception = task.exception()
+        if exception:
+            logger.error(f"Background task for user {user_id} failed: {exception}")
+    except asyncio.CancelledError:
+        logger.info(f"Task for user {user_id} was cancelled.")
+
 # --- هندلرهای اصلی ربات ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
@@ -42,10 +55,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     data_manager.update_user_stats(user_id, user)
     
     welcome_msg = data_manager.DATA.get('welcome_message', "سلام {user_mention}! 🤖\n\nمن یک ربات مدیریت گروه هستم. با دستور /help از قابلیت‌های من مطلع شوید.")
-    await update.message.reply_html(
-        welcome_msg.format(user_mention=user.mention_html()),
-        disable_web_page_preview=True
-    )
+    try:
+        await update.message.reply_html(
+            welcome_msg.format(user_mention=user.mention_html()),
+            disable_web_page_preview=True
+        )
+    except TelegramError as e:
+        logger.error(f"Failed to send start message: {e}")
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """نمایش راهنمای ربات."""
@@ -70,7 +86,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "🔧 **دستورات ادمین ربات:**\n"
         "• `/commands` - نمایش تمام دستورات ادمین ربات"
     )
-    await update.message.reply_text(help_text, parse_mode='Markdown')
+    try:
+        await update.message.reply_text(help_text, parse_mode='Markdown')
+    except TelegramError as e:
+        logger.error(f"Failed to send help message: {e}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """مدیریت پیام‌های کاربران در گروه."""
@@ -89,7 +108,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     # بررسی حالت نگهداری (فقط برای کاربران عادی)
     if data_manager.DATA.get('maintenance_mode', False) and user_id not in admin_panel.ADMIN_IDS:
-        await update.message.reply_text("🔧 ربات در حال حاضر در حالت نگهداری قرار دارد. لطفاً بعداً تلاش کنید.")
+        try:
+            await update.message.reply_text("🔧 ربات در حال حاضر در حالت نگهداری قرار دارد. لطفاً بعداً تلاش کنید.")
+        except TelegramError as e:
+            logger.error(f"Failed to send maintenance message: {e}")
         return
 
     # بررسی کلمات مسدود شده
@@ -116,9 +138,14 @@ async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     user_id = update.effective_user.id
     
     # بررسی اینکه آیا کاربر ادمین است
-    chat_member = await context.bot.get_chat_member(chat_id, user_id)
-    if chat_member.status not in ['administrator', 'creator']:
-        await update.message.reply_text("⛔️ فقط ادمین‌ها می‌توانند از این دستور استفاده کنند.")
+    try:
+        chat_member = await context.bot.get_chat_member(chat_id, user_id)
+        if chat_member.status not in ['administrator', 'creator']:
+            await update.message.reply_text("⛔️ فقط ادمین‌ها می‌توانند از این دستور استفاده کنند.")
+            return
+    except TelegramError as e:
+        logger.error(f"Failed to check admin status for ban command: {e}")
+        await update.message.reply_text("❌ خطا در بررسی سطح دسترسی شما.")
         return
     
     # بررسی اینکه آیا پیام ریپلای شده است
@@ -130,9 +157,14 @@ async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     target_user_id = target_user.id
     
     # بررسی اینکه آیا کاربر هدف ادمین است
-    target_chat_member = await context.bot.get_chat_member(chat_id, target_user_id)
-    if target_chat_member.status in ['administrator', 'creator']:
-        await update.message.reply_text("🛡️ شما نمی‌توانید یک ادمین را بن کنید!")
+    try:
+        target_chat_member = await context.bot.get_chat_member(chat_id, target_user_id)
+        if target_chat_member.status in ['administrator', 'creator']:
+            await update.message.reply_text("🛡️ شما نمی‌توانید یک ادمین را بن کنید!")
+            return
+    except TelegramError as e:
+        logger.error(f"Failed to check target admin status for ban command: {e}")
+        await update.message.reply_text("❌ خطا در بررسی سطح دسترسی کاربر هدف.")
         return
     
     try:
@@ -163,11 +195,16 @@ async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     user_id = update.effective_user.id
     
     # بررسی اینکه آیا کاربر ادمین است
-    chat_member = await context.bot.get_chat_member(chat_id, user_id)
-    if chat_member.status not in ['administrator', 'creator']:
-        await update.message.reply_text("⛔️ فقط ادمین‌ها می‌توانند از این دستور استفاده کنند.")
+    try:
+        chat_member = await context.bot.get_chat_member(chat_id, user_id)
+        if chat_member.status not in ['administrator', 'creator']:
+            await update.message.reply_text("⛔️ فقط ادمین‌ها می‌توانند از این دستور استفاده کنند.")
+            return
+    except TelegramError as e:
+        logger.error(f"Failed to check admin status for unban command: {e}")
+        await update.message.reply_text("❌ خطا در بررسی سطح دسترسی شما.")
         return
-    
+
     # بررسی اینکه آیا پیام ریپلای شده است
     if not update.message.reply_to_message:
         await update.message.reply_text("⚠️ لطفاً روی پیام کاربری که می‌خواهید آنبن کنید ریپلای کنید.")
@@ -204,9 +241,14 @@ async def mute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     user_id = update.effective_user.id
     
     # بررسی اینکه آیا کاربر ادمین است
-    chat_member = await context.bot.get_chat_member(chat_id, user_id)
-    if chat_member.status not in ['administrator', 'creator']:
-        await update.message.reply_text("⛔️ فقط ادمین‌ها می‌توانند از این دستور استفاده کنند.")
+    try:
+        chat_member = await context.bot.get_chat_member(chat_id, user_id)
+        if chat_member.status not in ['administrator', 'creator']:
+            await update.message.reply_text("⛔️ فقط ادمین‌ها می‌توانند از این دستور استفاده کنند.")
+            return
+    except TelegramError as e:
+        logger.error(f"Failed to check admin status for mute command: {e}")
+        await update.message.reply_text("❌ خطا در بررسی سطح دسترسی شما.")
         return
     
     # بررسی اینکه آیا پیام ریپلای شده است
@@ -218,9 +260,14 @@ async def mute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     target_user_id = target_user.id
     
     # بررسی اینکه آیا کاربر هدف ادمین است
-    target_chat_member = await context.bot.get_chat_member(chat_id, target_user_id)
-    if target_chat_member.status in ['administrator', 'creator']:
-        await update.message.reply_text("🛡️ شما نمی‌توانید یک ادمین را بی‌صدا کنید!")
+    try:
+        target_chat_member = await context.bot.get_chat_member(chat_id, target_user_id)
+        if target_chat_member.status in ['administrator', 'creator']:
+            await update.message.reply_text("🛡️ شما نمی‌توانید یک ادمین را بی‌صدا کنید!")
+            return
+    except TelegramError as e:
+        logger.error(f"Failed to check target admin status for mute command: {e}")
+        await update.message.reply_text("❌ خطا در بررسی سطح دسترسی کاربر هدف.")
         return
     
     try:
@@ -245,11 +292,16 @@ async def unmute_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = update.effective_user.id
     
     # بررسی اینکه آیا کاربر ادمین است
-    chat_member = await context.bot.get_chat_member(chat_id, user_id)
-    if chat_member.status not in ['administrator', 'creator']:
-        await update.message.reply_text("⛔️ فقط ادمین‌ها می‌توانند از این دستور استفاده کنند.")
+    try:
+        chat_member = await context.bot.get_chat_member(chat_id, user_id)
+        if chat_member.status not in ['administrator', 'creator']:
+            await update.message.reply_text("⛔️ فقط ادمین‌ها می‌توانند از این دستور استفاده کنند.")
+            return
+    except TelegramError as e:
+        logger.error(f"Failed to check admin status for unmute command: {e}")
+        await update.message.reply_text("❌ خطا در بررسی سطح دسترسی شما.")
         return
-    
+
     # بررسی اینکه آیا پیام ریپلای شده است
     if not update.message.reply_to_message:
         await update.message.reply_text("⚠️ لطفاً روی پیام کاربری که می‌خواهید از حالت بی‌صدا درآورید ریپلای کنید.")
@@ -280,11 +332,16 @@ async def warn_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     user_id = update.effective_user.id
     
     # بررسی اینکه آیا کاربر ادمین است
-    chat_member = await context.bot.get_chat_member(chat_id, user_id)
-    if chat_member.status not in ['administrator', 'creator']:
-        await update.message.reply_text("⛔️ فقط ادمین‌ها می‌توانند از این دستور استفاده کنند.")
+    try:
+        chat_member = await context.bot.get_chat_member(chat_id, user_id)
+        if chat_member.status not in ['administrator', 'creator']:
+            await update.message.reply_text("⛔️ فقط ادمین‌ها می‌توانند از این دستور استفاده کنند.")
+            return
+    except TelegramError as e:
+        logger.error(f"Failed to check admin status for warn command: {e}")
+        await update.message.reply_text("❌ خطا در بررسی سطح دسترسی شما.")
         return
-    
+
     # بررسی اینکه آیا پیام ریپلای شده است
     if not update.message.reply_to_message:
         await update.message.reply_text("⚠️ لطفاً روی پیام کاربری که می‌خواهید اخطار دهید ریپلای کنید.")
@@ -315,7 +372,10 @@ async def warn_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         except Exception as e:
             logger.error(f"Error banning user after 3 warnings: {e}")
     
-    await update.message.reply_text(warn_text, parse_mode='HTML')
+    try:
+        await update.message.reply_text(warn_text, parse_mode='HTML')
+    except TelegramError as e:
+        logger.error(f"Failed to send warning message: {e}")
 
 async def del_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """حذف پیام با ریپلای روی آن."""
@@ -323,11 +383,16 @@ async def del_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     user_id = update.effective_user.id
     
     # بررسی اینکه آیا کاربر ادمین است
-    chat_member = await context.bot.get_chat_member(chat_id, user_id)
-    if chat_member.status not in ['administrator', 'creator']:
-        await update.message.reply_text("⛔️ فقط ادمین‌ها می‌توانند از این دستور استفاده کنند.")
+    try:
+        chat_member = await context.bot.get_chat_member(chat_id, user_id)
+        if chat_member.status not in ['administrator', 'creator']:
+            await update.message.reply_text("⛔️ فقط ادمین‌ها می‌توانند از این دستور استفاده کنند.")
+            return
+    except TelegramError as e:
+        logger.error(f"Failed to check admin status for del command: {e}")
+        await update.message.reply_text("❌ خطا در بررسی سطح دسترسی شما.")
         return
-    
+
     # بررسی اینکه آیا پیام ریپلای شده است
     if not update.message.reply_to_message:
         await update.message.reply_text("⚠️ لطفاً روی پیامی که می‌خواهید حذف کنید ریپلای کنید.")
@@ -346,11 +411,16 @@ async def purge_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     user_id = update.effective_user.id
     
     # بررسی اینکه آیا کاربر ادمین است
-    chat_member = await context.bot.get_chat_member(chat_id, user_id)
-    if chat_member.status not in ['administrator', 'creator']:
-        await update.message.reply_text("⛔️ فقط ادمین‌ها می‌توانند از این دستور استفاده کنند.")
+    try:
+        chat_member = await context.bot.get_chat_member(chat_id, user_id)
+        if chat_member.status not in ['administrator', 'creator']:
+            await update.message.reply_text("⛔️ فقط ادمین‌ها می‌توانند از این دستور استفاده کنند.")
+            return
+    except TelegramError as e:
+        logger.error(f"Failed to check admin status for purge command: {e}")
+        await update.message.reply_text("❌ خطا در بررسی سطح دسترسی شما.")
         return
-    
+
     # بررسی اینکه آیا پیام ریپلای شده است
     if not update.message.reply_to_message:
         await update.message.reply_text("⚠️ لطفاً روی پیامی که می‌خواهید از آن به بعد پیام‌ها حذف شوند ریپلای کنید.")
@@ -384,7 +454,9 @@ async def purge_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             
     except Exception as e:
         logger.error(f"Error in purge command: {e}")
-        await update.message.reply_text(f"❌ خطا در حذف پیام‌ها: {e}")
+        # We cannot reply here because the command message is deleted.
+        # Consider sending a new message if this is critical.
+        # await context.bot.send_message(chat_id, f"❌ خطا در حذف پیام‌ها: {e}")
 
 async def pin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """سنجاق کردن پیام با ریپلای روی آن."""
@@ -392,11 +464,16 @@ async def pin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     user_id = update.effective_user.id
     
     # بررسی اینکه آیا کاربر ادمین است
-    chat_member = await context.bot.get_chat_member(chat_id, user_id)
-    if chat_member.status not in ['administrator', 'creator']:
-        await update.message.reply_text("⛔️ فقط ادمین‌ها می‌توانند از این دستور استفاده کنند.")
+    try:
+        chat_member = await context.bot.get_chat_member(chat_id, user_id)
+        if chat_member.status not in ['administrator', 'creator']:
+            await update.message.reply_text("⛔️ فقط ادمین‌ها می‌توانند از این دستور استفاده کنند.")
+            return
+    except TelegramError as e:
+        logger.error(f"Failed to check admin status for pin command: {e}")
+        await update.message.reply_text("❌ خطا در بررسی سطح دسترسی شما.")
         return
-    
+
     # بررسی اینکه آیا پیام ریپلای شده است
     if not update.message.reply_to_message:
         await update.message.reply_text("⚠️ لطفاً روی پیامی که می‌خواهید سنجاق کنید ریپلای کنید.")
@@ -421,11 +498,16 @@ async def unpin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     user_id = update.effective_user.id
     
     # بررسی اینکه آیا کاربر ادمین است
-    chat_member = await context.bot.get_chat_member(chat_id, user_id)
-    if chat_member.status not in ['administrator', 'creator']:
-        await update.message.reply_text("⛔️ فقط ادمین‌ها می‌توانند از این دستور استفاده کنند.")
+    try:
+        chat_member = await context.bot.get_chat_member(chat_id, user_id)
+        if chat_member.status not in ['administrator', 'creator']:
+            await update.message.reply_text("⛔️ فقط ادمین‌ها می‌توانند از این دستور استفاده کنند.")
+            return
+    except TelegramError as e:
+        logger.error(f"Failed to check admin status for unpin command: {e}")
+        await update.message.reply_text("❌ خطا در بررسی سطح دسترسی شما.")
         return
-    
+
     try:
         await context.bot.unpin_chat_message(chat_id=chat_id)
         await update.message.reply_text("📌 پیام با موفقیت از حالت سنجاق درآمد.")
@@ -441,10 +523,13 @@ async def rules_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     # دریافت قوانین گروه از دیتابیس
     group_rules = data_manager.DATA.get('group_rules', {}).get(str(chat_id), "قوانین گروه هنوز تنظیم نشده است.")
     
-    await update.message.reply_text(
-        f"📋 **قوانین گروه:**\n\n{group_rules}",
-        parse_mode='Markdown'
-    )
+    try:
+        await update.message.reply_text(
+            f"📋 **قوانین گروه:**\n\n{group_rules}",
+            parse_mode='Markdown'
+        )
+    except TelegramError as e:
+        logger.error(f"Failed to send rules message: {e}")
 
 async def setrules_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """تنظیم قوانین جدید گروه."""
@@ -452,11 +537,16 @@ async def setrules_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     user_id = update.effective_user.id
     
     # بررسی اینکه آیا کاربر ادمین است
-    chat_member = await context.bot.get_chat_member(chat_id, user_id)
-    if chat_member.status not in ['administrator', 'creator']:
-        await update.message.reply_text("⛔️ فقط ادمین‌ها می‌توانند از این دستور استفاده کنند.")
+    try:
+        chat_member = await context.bot.get_chat_member(chat_id, user_id)
+        if chat_member.status not in ['administrator', 'creator']:
+            await update.message.reply_text("⛔️ فقط ادمین‌ها می‌توانند از این دستور استفاده کنند.")
+            return
+    except TelegramError as e:
+        logger.error(f"Failed to check admin status for setrules command: {e}")
+        await update.message.reply_text("❌ خطا در بررسی سطح دسترسی شما.")
         return
-    
+
     if not context.args:
         await update.message.reply_text("⚠️ لطفاً قوانین جدید را بنویسید.\nمثال: `/setrules 1. احترام به دیگران\n2. ارسال اسپم ممنوع`")
         return
@@ -470,38 +560,58 @@ async def setrules_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     data_manager.DATA['group_rules'][str(chat_id)] = new_rules
     data_manager.save_data()
     
-    await update.message.reply_text("✅ قوانین گروه با موفقیت به‌روزرسانی شد.")
+    try:
+        await update.message.reply_text("✅ قوانین گروه با موفقیت به‌روزرسانی شد.")
+    except TelegramError as e:
+        logger.error(f"Failed to send setrules confirmation: {e}")
 
 async def info_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """نمایش اطلاعات گروه."""
     chat = update.effective_chat
     
     # دریافت اطلاعات گروه
-    chat_info = await context.bot.get_chat(chat.id)
+    try:
+        chat_info = await context.bot.get_chat(chat.id)
+    except TelegramError as e:
+        logger.error(f"Failed to get chat info: {e}")
+        await update.message.reply_text("❌ خطا در دریافت اطلاعات گروه.")
+        return
     
     # تعداد اعضا
     try:
         member_count = await chat.get_member_count()
-    except:
+    except Exception:
         member_count = "نامشخص"
     
-    # دریافت اطلاعات ادمین‌ها
+    # دریافت اطلاعات ادمین‌ها با مدیریت خطا
+    admin_list = "نامشخص (ربات باید ادمین باشد)"
     try:
         administrators = await context.bot.get_chat_administrators(chat.id)
         admin_list = "\n".join([f"• {admin.user.mention_html()}" for admin in administrators])
-    except:
-        admin_list = "نامشخص"
+    except TelegramError as e:
+        logger.warning(f"Could not fetch chat administrators (bot might not be admin): {e}")
+    
+    # استفاده از getattr برای دسترسی امن به ویژگی description
+    description = getattr(chat_info, 'description', None)
     
     info_text = (
         f"ℹ️ **اطلاعات گروه:**\n\n"
         f"📝 **نام:** {chat.title}\n"
         f"🆔 **آیدی:** `{chat.id}`\n"
         f"👥 **تعداد اعضا:** {member_count}\n"
-        f"📝 **توضیحات:** {chat.description or 'ندارد'}\n\n"
+        f"📝 **توضیحات:** {description or 'ندارد'}\n\n"
         f"👑 **لیست ادمین‌ها:**\n{admin_list}"
     )
     
-    await update.message.reply_text(info_text, parse_mode='HTML')
+    try:
+        await update.message.reply_text(info_text, parse_mode='HTML')
+    except TelegramError as e:
+        logger.error(f"Failed to send info message: {e}")
+
+# --- مدیریت خطای عمومی ---
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Log Errors caused by Updates."""
+    logger.error('Exception while handling an update: %s', context.error)
 
 def main() -> None:
     token = os.environ.get("BOT_TOKEN")
@@ -515,6 +625,9 @@ def main() -> None:
         .concurrent_updates(True)
         .build()
     )
+
+    # ثبت مدیریت خطای عمومی
+    application.add_error_handler(error_handler)
 
     # هندلرهای دستورات عمومی
     application.add_handler(CommandHandler("start", start))
