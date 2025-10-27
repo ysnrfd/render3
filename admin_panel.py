@@ -71,6 +71,22 @@ async def admin_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📜 `/list_blocked_words` - نمایش لیست کلمات مسدود\n"
         "💻 `/system_info` - نمایش اطلاعات سیستم\n"
         "🔄 `/reset_stats [messages/all]` - ریست کردن آمار\n"
+        "🏆 `/leaderboard` - نمایش جدول امتیازات کاربران\n"
+        "🎯 `/add_command [دستور] [پاسخ]` - افزودن دستور سفارشی\n"
+        "🗑️ `/remove_command [دستور]` - حذف دستور سفارشی\n"
+        "📋 `/list_commands` - نمایش لیست دستورات سفارشی\n"
+        "🔗 `/add_allowed_domain [دامنه]` - افزودن دامنه مجاز\n"
+        "🗑️ `/remove_allowed_domain [دامنه]` - حذف دامنه مجاز\n"
+        "📋 `/list_allowed_domains` - نمایش لیست دامنه‌های مجاز\n"
+        "🔗 `/toggle_link_check` - فعال/غیرفعال کردن بررسی لینک\n"
+        "🚫 `/toggle_anti_spam` - فعال/غیرفعال کردن ضد اسپم\n"
+        "⚙️ `/set_spam_threshold [تعداد]` - تنظیم آستانه اسپم\n"
+        "⏱️ `/set_spam_timeframe [ثانیه]` - تنظیم بازه زمانی اسپم\n"
+        "👑 `/set_admin_level [آیدی] [سطح]` - تنظیم سطح ادمین\n"
+        "👑 `/list_admins` - نمایش لیست ادمین‌ها و سطوح آن‌ها\n"
+        "👋 `/toggle_auto_welcome` - فعال/غیرفعال کردن خوشامدگویی خودکار\n"
+        "👋 `/toggle_auto_goodbye` - فعال/غیرفعال کردن خداحافظی خودکار\n"
+        "📊 `/group_report [روز]` - دریافت گزارش آماری گروه\n"
         "📋 `/commands` - نمایش این لیست دستورات"
     )
     await update.message.reply_text(commands_text, parse_mode='Markdown')
@@ -148,7 +164,7 @@ async def admin_targeted_broadcast(update: Update, context: ContextTypes.DEFAULT
     """ارسال پیام به گروه خاصی از کاربران بر اساس معیارهای مشخص."""
     if len(context.args) < 3:
         await update.message.reply_text("⚠️ فرمت صحیح: `/targeted_broadcast [معیار] [مقدار] [پیام]`\n"
-                                       "معیارهای موجود: `active_days`, `message_count`, `banned`")
+                                       "معیارهای موجود: `active_days`, `message_count`, `banned`, `points`, `level`")
         return
     
     criteria = context.args[0].lower()
@@ -184,8 +200,28 @@ async def admin_targeted_broadcast(update: Update, context: ContextTypes.DEFAULT
             await update.message.reply_text("⚠️ مقدار برای معیار banned باید true یا false باشد.")
             return
     
+    elif criteria == "points":
+        try:
+            min_points = int(value)
+            for user_id_str, points_data in data_manager.DATA.get('user_points', {}).items():
+                if points_data.get('points', 0) >= min_points:
+                    target_users.append(int(user_id_str))
+        except ValueError:
+            await update.message.reply_text("⚠️ مقدار امتیاز باید یک عدد صحیح باشد.")
+            return
+    
+    elif criteria == "level":
+        try:
+            min_level = int(value)
+            for user_id_str, points_data in data_manager.DATA.get('user_points', {}).items():
+                if points_data.get('level', 0) >= min_level:
+                    target_users.append(int(user_id_str))
+        except ValueError:
+            await update.message.reply_text("⚠️ مقدار سطح باید یک عدد صحیح باشد.")
+            return
+    
     else:
-        await update.message.reply_text("⚠️ معیار نامعتبر است. معیارهای موجود: active_days, message_count, banned")
+        await update.message.reply_text("⚠️ معیار نامعتبر است. معیارهای موجود: active_days, message_count, banned, points, level")
         return
     
     if not target_users:
@@ -354,6 +390,7 @@ async def admin_userinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_id = int(context.args[0])
     user_info = data_manager.DATA['users'].get(str(user_id))
+    user_points = data_manager.get_user_points(user_id)
 
     if not user_info:
         await update.message.reply_text(f"کاربری با آیدی `{user_id}` در دیتابیس یافت نشد.")
@@ -378,7 +415,10 @@ async def admin_userinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📈 **میانگین پیام در روز:** `{avg_messages:.2f}`\n"
         f"📅 **اولین پیام:** {user_info.get('first_seen', 'N/A')}\n"
         f"🕒 **آخرین فعالیت:** {user_info.get('last_seen', 'N/A')}\n"
-        f"🚫 **وضعیت مسدودیت:** {is_banned}"
+        f"🚫 **وضعیت مسدودیت:** {is_banned}\n"
+        f"🏆 **امتیاز:** {user_points['points']}\n"
+        f"📊 **سطح:** {user_points['level']}\n"
+        f"📝 **پیام‌های امروز:** {user_points['daily_messages']}"
     )
     await update.message.reply_text(text, parse_mode='Markdown')
 
@@ -447,9 +487,10 @@ async def admin_users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         first_name = user_info.get('first_name', 'N/A')
         last_seen = user_info.get('last_seen', 'N/A')
         message_count = user_info.get('message_count', 0)
+        user_points = data_manager.get_user_points(int(user_id))
         
         users_text += f"{i}. {is_banned} `{user_id}` - {first_name} (@{username})\n"
-        users_text += f"   پیام‌ها: `{message_count}` | آخرین فعالیت: `{last_seen}`\n\n"
+        users_text += f"   پیام‌ها: `{message_count}` | امتیاز: `{user_points['points']}` | آخرین فعالیت: `{last_seen}`\n\n"
     
     keyboard = []
     if page > 1: keyboard.append([InlineKeyboardButton("⬅️ صفحه قبل", callback_data=f"users_list:{page-1}")])
@@ -491,9 +532,10 @@ async def admin_user_search(update: Update, context: ContextTypes.DEFAULT_TYPE):
         first_name_display = user_info.get('first_name', 'N/A') # برای نمایش نیازی به lower نیست
         last_seen = user_info.get('last_seen', 'N/A')
         message_count = user_info.get('message_count', 0)
+        user_points = data_manager.get_user_points(int(user_id))
         
         results_text += f"{is_banned} `{user_id}` - {first_name_display} (@{username_display})\n"
-        results_text += f"   پیام‌ها: `{message_count}` | آخرین فعالیت: `{last_seen}`\n\n"
+        results_text += f"   پیام‌ها: `{message_count}` | امتیاز: `{user_points['points']}` | آخرین فعالیت: `{last_seen}`\n\n"
     
     await update.message.reply_text(results_text, parse_mode='Markdown')
 
@@ -529,6 +571,8 @@ async def admin_export_csv(update: Update, context: ContextTypes.DEFAULT_TYPE):
     df_data = []
     for user_id, user_info in users.items():
         is_banned = "بله" if int(user_id) in data_manager.DATA['banned_users'] else "خیر"
+        user_points = data_manager.get_user_points(int(user_id))
+        
         df_data.append({
             'User ID': user_id,
             'First Name': user_info.get('first_name', 'N/A'),
@@ -536,6 +580,9 @@ async def admin_export_csv(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'Message Count': user_info.get('message_count', 0),
             'First Seen': user_info.get('first_seen', 'N/A'),
             'Last Seen': user_info.get('last_seen', 'N/A'),
+            'Points': user_points['points'],
+            'Level': user_points['level'],
+            'Daily Messages': user_points['daily_messages'],
             'Banned': is_banned
         })
     
@@ -772,6 +819,331 @@ async def admin_reset_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     data_manager.save_data()
 
+@admin_only
+async def admin_leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """نمایش جدول امتیازات کاربران."""
+    limit = 10
+    if context.args and context.args[0].isdigit():
+        limit = int(context.args[0])
+        if limit < 1:
+            limit = 10
+    
+    top_users = data_manager.get_top_users_by_points(limit)
+    
+    if not top_users:
+        await update.message.reply_text("هیچ کاربری با امتیاز یافت نشد.")
+        return
+    
+    leaderboard_text = f"🏆 **جدول امتیازات کاربران (برترین {limit} کاربر):**\n\n"
+    
+    for i, user in enumerate(top_users, 1):
+        medal = ""
+        if i == 1:
+            medal = "🥇"
+        elif i == 2:
+            medal = "🥈"
+        elif i == 3:
+            medal = "🥉"
+        
+        leaderboard_text += f"{i}. {medal} {user['name']} - {user['points']} امتیاز (سطح {user['level']})\n"
+    
+    await update.message.reply_text(leaderboard_text, parse_mode='Markdown')
+
+@admin_only
+async def admin_add_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """افزودن دستور سفارشی جدید."""
+    if len(context.args) < 2:
+        await update.message.reply_text("⚠️ فرمت صحیح: `/add_command [دستور] [پاسخ]`\n"
+                                       "مثال: `/add_command about این ربات برای مدیریت گروه طراحی شده است.`")
+        return
+    
+    command = context.args[0].lower()
+    if command.startswith('/'):
+        command = command[1:]  # حذف / از ابتدای دستور
+    
+    response = " ".join(context.args[1:])
+    
+    data_manager.set_custom_command(command, response)
+    
+    await update.message.reply_text(f"✅ دستور سفارشی `/{command}` با موفقیت اضافه شد.")
+
+@admin_only
+async def admin_remove_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """حذف دستور سفارشی."""
+    if not context.args:
+        await update.message.reply_text("⚠️ لطفاً دستوری که می‌خواهید حذف کنید را وارد کنید.\n"
+                                       "مثال: `/remove_command about`")
+        return
+    
+    command = context.args[0].lower()
+    if command.startswith('/'):
+        command = command[1:]  # حذف / از ابتدای دستور
+    
+    if not data_manager.get_custom_command(command):
+        await update.message.reply_text(f"⚠️ دستور سفارشی `/{command}` یافت نشد.")
+        return
+    
+    data_manager.delete_custom_command(command)
+    
+    await update.message.reply_text(f"✅ دستور سفارشی `/{command}` با موفقیت حذف شد.")
+
+@admin_only
+async def admin_list_commands(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """نمایش لیست دستورات سفارشی."""
+    custom_commands = data_manager.DATA.get('custom_commands', {})
+    
+    if not custom_commands:
+        await update.message.reply_text("هیچ دستور سفارشی تعریف نشده است.")
+        return
+    
+    commands_text = "📋 **لیست دستورات سفارشی:**\n\n"
+    
+    for command, response in custom_commands.items():
+        commands_text += f"• `/{command}` - {response[:50]}{'...' if len(response) > 50 else ''}\n"
+    
+    await update.message.reply_text(commands_text, parse_mode='Markdown')
+
+@admin_only
+async def admin_add_allowed_domain(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """افزودن دامنه مجاز."""
+    if not context.args:
+        await update.message.reply_text("⚠️ لطفاً دامنه مورد نظر را وارد کنید.\n"
+                                       "مثال: `/add_allowed_domain example.com`")
+        return
+    
+    domain = context.args[0].lower()
+    
+    if domain in data_manager.DATA.get('allowed_domains', []):
+        await update.message.reply_text(f"⚠️ دامنه «{domain}» از قبل در لیست دامنه‌های مجاز وجود دارد.")
+        return
+    
+    if 'allowed_domains' not in data_manager.DATA:
+        data_manager.DATA['allowed_domains'] = []
+    
+    data_manager.DATA['allowed_domains'].append(domain)
+    data_manager.save_data()
+    
+    await update.message.reply_text(f"✅ دامنه «{domain}» به لیست دامنه‌های مجاز اضافه شد.")
+
+@admin_only
+async def admin_remove_allowed_domain(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """حذف دامنه مجاز."""
+    if not context.args:
+        await update.message.reply_text("⚠️ لطفاً دامنه مورد نظر را وارد کنید.\n"
+                                       "مثال: `/remove_allowed_domain example.com`")
+        return
+    
+    domain = context.args[0].lower()
+    
+    if domain not in data_manager.DATA.get('allowed_domains', []):
+        await update.message.reply_text(f"⚠️ دامنه «{domain}» در لیست دامنه‌های مجاز وجود ندارد.")
+        return
+    
+    data_manager.DATA['allowed_domains'].remove(domain)
+    data_manager.save_data()
+    
+    await update.message.reply_text(f"✅ دامنه «{domain}» از لیست دامنه‌های مجاز حذف شد.")
+
+@admin_only
+async def admin_list_allowed_domains(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """نمایش لیست دامنه‌های مجاز."""
+    allowed_domains = data_manager.DATA.get('allowed_domains', [])
+    
+    if not allowed_domains:
+        await update.message.reply_text("هیچ دامنه مجازی در لیست وجود ندارد.")
+        return
+    
+    domains_text = "🔗 **لیست دامنه‌های مجاز:**\n\n"
+    domains_text += "\n".join([f"• {domain}" for domain in allowed_domains])
+    
+    await update.message.reply_text(domains_text, parse_mode='Markdown')
+
+@admin_only
+async def admin_toggle_link_check(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """فعال یا غیرفعال کردن بررسی لینک."""
+    current_status = data_manager.DATA.get('link_check_enabled', False)
+    new_status = not current_status
+    
+    data_manager.DATA['link_check_enabled'] = new_status
+    data_manager.save_data()
+    
+    status_text = "فعال" if new_status else "غیرفعال"
+    await update.message.reply_text(f"✅ بررسی لینک {status_text} شد.")
+
+@admin_only
+async def admin_toggle_anti_spam(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """فعال یا غیرفعال کردن ضد اسپم."""
+    current_status = data_manager.DATA.get('anti_spam_enabled', False)
+    new_status = not current_status
+    
+    data_manager.DATA['anti_spam_enabled'] = new_status
+    data_manager.save_data()
+    
+    status_text = "فعال" if new_status else "غیرفعال"
+    await update.message.reply_text(f"✅ ضد اسپم {status_text} شد.")
+
+@admin_only
+async def admin_set_spam_threshold(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """تنظیم آستانه اسپم."""
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text("⚠️ لطفاً یک عدد صحیح برای آستانه اسپم وارد کنید.\n"
+                                       "مثال: `/set_spam_threshold 5`")
+        return
+    
+    threshold = int(context.args[0])
+    
+    if threshold < 1:
+        await update.message.reply_text("⚠️ آستانه اسپم باید حداقل 1 باشد.")
+        return
+    
+    data_manager.DATA['spam_threshold'] = threshold
+    data_manager.save_data()
+    
+    await update.message.reply_text(f"✅ آستانه اسپم به {threshold} پیام در بازه زمانی مشخص تغییر یافت.")
+
+@admin_only
+async def admin_set_spam_timeframe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """تنظیم بازه زمانی اسپم."""
+    if not context.args or not context.args[0].isdigit():
+        await update.message.reply_text("⚠️ لطفاً یک عدد صحیح برای بازه زمانی اسپم وارد کنید.\n"
+                                       "مثال: `/set_spam_timeframe 60`")
+        return
+    
+    timeframe = int(context.args[0])
+    
+    if timeframe < 10:
+        await update.message.reply_text("⚠️ بازه زمانی اسپم باید حداقل 10 ثانیه باشد.")
+        return
+    
+    data_manager.DATA['spam_timeframe'] = timeframe
+    data_manager.save_data()
+    
+    await update.message.reply_text(f"✅ بازه زمانی اسپم به {timeframe} ثانیه تغییر یافت.")
+
+@admin_only
+async def admin_set_admin_level(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """تنظیم سطح ادمین برای کاربر."""
+    if len(context.args) < 2 or not context.args[0].isdigit() or not context.args[1].isdigit():
+        await update.message.reply_text("⚠️ فرمت صحیح: `/set_admin_level [آیدی] [سطح]`\n"
+                                       "مثال: `/set_admin_level 123456789 3`")
+        return
+    
+    user_id = int(context.args[0])
+    level = int(context.args[1])
+    
+    max_level = data_manager.DATA.get('max_admin_level', 5)
+    
+    if level < 0 or level > max_level:
+        await update.message.reply_text(f"⚠️ سطح ادمین باید بین 0 تا {max_level} باشد.")
+        return
+    
+    data_manager.set_admin_level(user_id, level)
+    
+    if level == 0:
+        await update.message.reply_text(f"✅ کاربر `{user_id}` از لیست ادمین‌ها حذف شد.")
+    else:
+        await update.message.reply_text(f"✅ سطح ادمین کاربر `{user_id}` به {level} تغییر یافت.")
+
+@admin_only
+async def admin_list_admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """نمایش لیست ادمین‌ها و سطوح آن‌ها."""
+    admins = data_manager.get_admins_by_level(1)
+    
+    if not admins:
+        await update.message.reply_text("هیچ ادمینی تعریف نشده است.")
+        return
+    
+    admins_text = "👑 **لیست ادمین‌ها:**\n\n"
+    
+    for admin in admins:
+        admins_text += f"👤 {admin['name']} (@{admin['username']}) - آیدی: `{admin['user_id']}` - سطح: {admin['level']}\n"
+    
+    await update.message.reply_text(admins_text, parse_mode='Markdown')
+
+@admin_only
+async def admin_toggle_auto_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """فعال یا غیرفعال کردن خوشامدگویی خودکار."""
+    current_status = data_manager.DATA.get('auto_welcome', True)
+    new_status = not current_status
+    
+    data_manager.DATA['auto_welcome'] = new_status
+    data_manager.save_data()
+    
+    status_text = "فعال" if new_status else "غیرفعال"
+    await update.message.reply_text(f"✅ خوشامدگویی خودکار {status_text} شد.")
+
+@admin_only
+async def admin_toggle_auto_goodbye(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """فعال یا غیرفعال کردن خداحافظی خودکار."""
+    current_status = data_manager.DATA.get('auto_goodbye', True)
+    new_status = not current_status
+    
+    data_manager.DATA['auto_goodbye'] = new_status
+    data_manager.save_data()
+    
+    status_text = "فعال" if new_status else "غیرفعال"
+    await update.message.reply_text(f"✅ خداحافظی خودکار {status_text} شد.")
+
+@admin_only
+async def admin_group_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """دریافت گزارش آماری گروه."""
+    chat_id = update.effective_chat.id
+    
+    days = 7  # پیش‌فرض 7 روز
+    if context.args and context.args[0].isdigit():
+        days = int(context.args[0])
+        if days < 1:
+            days = 1
+    
+    stats = data_manager.get_group_stats(chat_id, days)
+    
+    if not stats:
+        await update.message.reply_text("هیچ آماری برای این گروه در بازه زمانی مشخص یافت نشد.")
+        return
+    
+    # ایجاد نمودار آماری
+    dates = list(stats['daily_stats'].keys())
+    message_counts = [stats['daily_stats'][date]['total_messages'] for date in dates]
+    
+    plt.figure(figsize=(12, 6))
+    plt.plot(dates, message_counts, marker='o', linestyle='-')
+    plt.title(f'آمار پیام‌های گروه در {days} روز گذشته')
+    plt.xlabel('تاریخ')
+    plt.ylabel('تعداد پیام‌ها')
+    plt.xticks(rotation=45)
+    plt.grid(True)
+    
+    with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as f:
+        plt.savefig(f.name, bbox_inches='tight')
+        temp_file_path = f.name
+    
+    plt.close()
+    
+    # ایجاد متن گزارش
+    report_text = (
+        f"📊 **گزارش آماری گروه در {days} روز گذشته:**\n\n"
+        f"📝 **کل پیام‌ها:** {stats['total_messages']}\n"
+        f"📄 **پیام‌های متنی:** {stats['text_messages']} ({stats['text_messages']/stats['total_messages']*100:.1f}%)\n"
+        f"🖼️ **پیام‌های عکس:** {stats['photo_messages']} ({stats['photo_messages']/stats['total_messages']*100:.1f}%)\n"
+        f"🎥 **پیام‌های ویدیویی:** {stats['video_messages']} ({stats['video_messages']/stats['total_messages']*100:.1f}%)\n"
+        f"😀 **استیکرها:** {stats['sticker_messages']} ({stats['sticker_messages']/stats['total_messages']*100:.1f}%)\n"
+        f"🎤 **پیام‌های صوتی:** {stats['voice_messages']} ({stats['voice_messages']/stats['total_messages']*100:.1f}%)\n"
+        f"👥 **اعضای جدید:** {stats['new_members']}\n"
+        f"👋 **اعضای خارج شده:** {stats['left_members']}"
+    )
+    
+    try:
+        await update.message.reply_photo(
+            photo=open(temp_file_path, 'rb'),
+            caption=report_text,
+            parse_mode='Markdown'
+        )
+    except TelegramError as e:
+        logger.error(f"Failed to send group report: {e}")
+        await update.message.reply_text(report_text, parse_mode='Markdown')
+    
+    os.unlink(temp_file_path)
+
 # --- هندلر برای دکمه‌های صفحه‌بندی ---
 async def users_list_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """پردازش دکمه‌های صفحه‌بندی لیست کاربران."""
@@ -835,7 +1207,7 @@ def setup_admin_handlers(application):
     application.add_handler(CommandHandler("unban", admin_unban))
     application.add_handler(CommandHandler("user_info", admin_userinfo))
     application.add_handler(CommandHandler("logs", admin_logs))
-    application.add_handler(CommandHandler("logs_file", admin_logs_file)) # <--- هندلر جدید
+    application.add_handler(CommandHandler("logs_file", admin_logs_file))
     application.add_handler(CommandHandler("users_list", admin_users_list))
     application.add_handler(CommandHandler("user_search", admin_user_search))
     application.add_handler(CommandHandler("backup", admin_backup))
@@ -847,7 +1219,7 @@ def setup_admin_handlers(application):
     application.add_handler(CommandHandler("remove_scheduled", admin_remove_scheduled_broadcast))
     application.add_handler(CommandHandler("direct_message", admin_direct_message))
     application.add_handler(CommandHandler("export_csv", admin_export_csv))
-    application.add_handler(CommandHandler("maintenance", admin_maintenance)) # <--- هندلر جایگزین شده
+    application.add_handler(CommandHandler("maintenance", admin_maintenance))
     application.add_handler(CommandHandler("set_welcome", admin_set_welcome_message))
     application.add_handler(CommandHandler("set_goodbye", admin_set_goodbye_message))
     application.add_handler(CommandHandler("activity_heatmap", admin_activity_heatmap))
@@ -856,6 +1228,24 @@ def setup_admin_handlers(application):
     application.add_handler(CommandHandler("list_blocked_words", admin_list_blocked_words))
     application.add_handler(CommandHandler("system_info", admin_system_info))
     application.add_handler(CommandHandler("reset_stats", admin_reset_stats))
+    
+    # هندلرهای ویژگی‌های جدید
+    application.add_handler(CommandHandler("leaderboard", admin_leaderboard))
+    application.add_handler(CommandHandler("add_command", admin_add_command))
+    application.add_handler(CommandHandler("remove_command", admin_remove_command))
+    application.add_handler(CommandHandler("list_commands", admin_list_commands))
+    application.add_handler(CommandHandler("add_allowed_domain", admin_add_allowed_domain))
+    application.add_handler(CommandHandler("remove_allowed_domain", admin_remove_allowed_domain))
+    application.add_handler(CommandHandler("list_allowed_domains", admin_list_allowed_domains))
+    application.add_handler(CommandHandler("toggle_link_check", admin_toggle_link_check))
+    application.add_handler(CommandHandler("toggle_anti_spam", admin_toggle_anti_spam))
+    application.add_handler(CommandHandler("set_spam_threshold", admin_set_spam_threshold))
+    application.add_handler(CommandHandler("set_spam_timeframe", admin_set_spam_timeframe))
+    application.add_handler(CommandHandler("set_admin_level", admin_set_admin_level))
+    application.add_handler(CommandHandler("list_admins", admin_list_admins))
+    application.add_handler(CommandHandler("toggle_auto_welcome", admin_toggle_auto_welcome))
+    application.add_handler(CommandHandler("toggle_auto_goodbye", admin_toggle_auto_goodbye))
+    application.add_handler(CommandHandler("group_report", admin_group_report))
     
     # هندلر برای دکمه‌های صفحه‌بندی
     application.add_handler(CallbackQueryHandler(users_list_callback, pattern="^users_list:"))
