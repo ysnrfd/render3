@@ -65,7 +65,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "🤖 **راهنمای ربات مدیریت گروه**\n\n"
         "📋 **دستورات عمومی:**\n"
         "• `/start` - شروع ربات و نمایش پیام خوشامدگویی\n"
-        "• `/help` - نمایش این راهنما\n\n"
+        "• `/help` - نمایش این راهنما\n"
+        "• `/points` - نمایش امتیاز و سطح شما\n"
+        "• `/topusers` - نمایش کاربران برتر بر اساس امتیاز\n\n"
         "🛡️ **دستورات مدیریت گروه (فقط برای ادمین‌ها):**\n"
         "• `/ban` - مسدود کردن ارسال پیام کاربر (با ریپلای)\n"
         "• `/unban` - رفع مسدودیت ارسال پیام کاربر (با ریپلای)\n"
@@ -78,7 +80,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• `/unpin` - درآوردن پیام از حالت سنجاق شده\n"
         "• `/rules` - نمایش قوانین گروه\n"
         "• `/setrules` - تنظیم قوانین جدید گروه\n"
-        "• `/info` - نمایش اطلاعات گروه\n\n"
+        "• `/info` - نمایش اطلاعات گروه\n"
+        "• `/groupstats` - نمایش آمار گروه\n\n"
         "🔧 **دستورات ادمین ربات:**\n"
         "• `/commands` - نمایش تمام دستورات ادمین ربات"
     )
@@ -86,6 +89,96 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.message.reply_text(help_text, parse_mode='Markdown')
     except TelegramError as e:
         logger.error(f"Failed to send help message: {e}")
+
+async def points_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """نمایش امتیاز و سطح کاربر."""
+    user_id = update.effective_user.id
+    user_points = data_manager.get_user_points(user_id)
+    
+    points_text = (
+        f"🏆 **امتیاز و سطح شما:**\n\n"
+        f"⭐ **امتیاز:** {user_points['points']}\n"
+        f"📊 **سطح:** {user_points['level']}\n"
+        f"📝 **پیام‌های امروز:** {user_points['daily_messages']}\n"
+        f"🕒 **آخرین فعالیت:** {user_points['last_activity']}"
+    )
+    
+    try:
+        await update.message.reply_text(points_text, parse_mode='Markdown')
+    except TelegramError as e:
+        logger.error(f"Failed to send points message: {e}")
+
+async def top_users_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """نمایش کاربران برتر بر اساس امتیاز."""
+    top_users = data_manager.get_top_users_by_points(10)
+    
+    if not top_users:
+        await update.message.reply_text("هیچ کاربری با امتیاز یافت نشد.")
+        return
+    
+    top_users_text = "🏆 **کاربران برتر بر اساس امتیاز:**\n\n"
+    
+    for i, user in enumerate(top_users, 1):
+        medal = ""
+        if i == 1:
+            medal = "🥇"
+        elif i == 2:
+            medal = "🥈"
+        elif i == 3:
+            medal = "🥉"
+        
+        top_users_text += f"{i}. {medal} {user['name']} - {user['points']} امتیاز (سطح {user['level']})\n"
+    
+    try:
+        await update.message.reply_text(top_users_text, parse_mode='Markdown')
+    except TelegramError as e:
+        logger.error(f"Failed to send top users message: {e}")
+
+async def group_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """نمایش آمار گروه."""
+    chat_id = update.effective_chat.id
+    user_id = update.effective_user.id
+    
+    # بررسی اینکه آیا کاربر ادمین است
+    try:
+        chat_member = await context.bot.get_chat_member(chat_id, user_id)
+        if chat_member.status not in ['administrator', 'creator']:
+            await update.message.reply_text("⛔️ فقط ادمین‌ها می‌توانند از این دستور استفاده کنند.")
+            return
+    except TelegramError as e:
+        logger.error(f"Failed to check admin status for group stats command: {e}")
+        await update.message.reply_text("❌ خطا در بررسی سطح دسترسی شما.")
+        return
+    
+    # دریافت آمار گروه
+    days = 7  # پیش‌فرض 7 روز
+    if context.args and context.args[0].isdigit():
+        days = int(context.args[0])
+        if days < 1:
+            days = 1
+    
+    stats = data_manager.get_group_stats(chat_id, days)
+    
+    if not stats:
+        await update.message.reply_text("هیچ آماری برای این گروه در بازه زمانی مشخص یافت نشد.")
+        return
+    
+    stats_text = (
+        f"📊 **آمار گروه در {days} روز گذشته:**\n\n"
+        f"📝 **کل پیام‌ها:** {stats['total_messages']}\n"
+        f"📄 **پیام‌های متنی:** {stats['text_messages']}\n"
+        f"🖼️ **پیام‌های عکس:** {stats['photo_messages']}\n"
+        f"🎥 **پیام‌های ویدیویی:** {stats['video_messages']}\n"
+        f"😀 **استیکرها:** {stats['sticker_messages']}\n"
+        f"🎤 **پیام‌های صوتی:** {stats['voice_messages']}\n"
+        f"👥 **اعضای جدید:** {stats['new_members']}\n"
+        f"👋 **اعضای خارج شده:** {stats['left_members']}"
+    )
+    
+    try:
+        await update.message.reply_text(stats_text, parse_mode='Markdown')
+    except TelegramError as e:
+        logger.error(f"Failed to send group stats message: {e}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """مدیریت پیام‌های کاربران در گروه."""
@@ -124,8 +217,129 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             logger.error(f"Failed to handle blocked word message: {e}")
         return
     
+    # بررسی امنیت لینک‌ها
+    if message.text and not data_manager.check_link_safety(message.text):
+        logger.info(f"User {user_id} sent a message with unsafe links in group {chat_id}.")
+        try:
+            await message.delete()
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"⚠️ پیام شما حاوی لینک‌های غیرمجاز بود و حذف شد.",
+                reply_to_message_id=message.message_id
+            )
+        except Exception as e:
+            logger.error(f"Failed to handle unsafe links message: {e}")
+        return
+    
+    # بررسی اسپم
+    if data_manager.is_user_spamming(user_id):
+        logger.info(f"User {user_id} is spamming in group {chat_id}.")
+        try:
+            await message.delete()
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"⚠️ لطفاً از ارسال پیام‌های مکرر خودداری کنید. پیام شما به عنوان اسپم شناسایی و حذف شد.",
+                reply_to_message_id=message.message_id
+            )
+        except Exception as e:
+            logger.error(f"Failed to handle spam message: {e}")
+        return
+    
+    # به‌روزرسانی آمار گروه
+    message_type = 'text'
+    if message.photo:
+        message_type = 'photo'
+    elif message.video:
+        message_type = 'video'
+    elif message.sticker:
+        message_type = 'sticker'
+    elif message.voice:
+        message_type = 'voice'
+    
+    data_manager.update_group_stats(chat_id, message_type)
+    
     # به‌روزرسانی آمار کاربر
-    data_manager.update_user_stats(user_id, update.effective_user)
+    level_up = data_manager.update_user_stats(user_id, update.effective_user)
+    
+    # اگر کاربر سطح جدیدی کسب کرده، به او اطلاع دهید
+    if level_up:
+        user_points = data_manager.get_user_points(user_id)
+        try:
+            await update.message.reply_text(
+                f"🎉 تبریک! شما به سطح {user_points['level']} ارتقا یافتید! 🎉",
+                parse_mode='Markdown'
+            )
+        except TelegramError as e:
+            logger.error(f"Failed to send level up message: {e}")
+
+async def handle_custom_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """مدیریت دستورات سفارشی."""
+    command = update.message.text[1:].lower().split(' ')[0]
+    response = data_manager.get_custom_command(command)
+    
+    if response:
+        try:
+            await update.message.reply_text(response)
+        except TelegramError as e:
+            logger.error(f"Failed to send custom command response: {e}")
+        return
+    
+    # اگر دستور سفارشی یافت نشد، به دستور help هدایت کن
+    await help_command(update, context)
+
+async def handle_new_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """مدیریت عضو جدید در گروه."""
+    chat_id = update.effective_chat.id
+    
+    # به‌روزرسانی آمار گروه
+    data_manager.update_group_stats(chat_id, 'new_members')
+    
+    # اگر خوشامدگویی خودکار فعال است
+    if data_manager.DATA.get('auto_welcome', True):
+        for new_member in update.message.new_chat_members:
+            # نادیده گرفتن خود ربات
+            if new_member.is_bot:
+                continue
+            
+            user_id = new_member.id
+            data_manager.update_user_stats(user_id, new_member)
+            
+            welcome_msg = data_manager.DATA.get('welcome_message', 
+                "سلام {user_mention}! 🤖\n\nمن یک ربات مدیریت گروه هستم. با دستور /help از قابلیت‌های من مطلع شوید.")
+            
+            try:
+                await update.message.reply_html(
+                    welcome_msg.format(user_mention=new_member.mention_html()),
+                    disable_web_page_preview=True
+                )
+            except TelegramError as e:
+                logger.error(f"Failed to send welcome message: {e}")
+
+async def handle_left_member(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """مدیریت عضو خارج شده از گروه."""
+    chat_id = update.effective_chat.id
+    
+    # به‌روزرسانی آمار گروه
+    data_manager.update_group_stats(chat_id, 'left_members')
+    
+    # اگر خداحافظی خودکار فعال است
+    if data_manager.DATA.get('auto_goodbye', True):
+        left_member = update.message.left_chat_member
+        
+        # نادیده گرفتن خود ربات
+        if left_member.is_bot:
+            return
+        
+        goodbye_msg = data_manager.DATA.get('goodbye_message', 
+            "کاربر {user_mention} گروه را ترک کرد. خداحافظ!")
+        
+        try:
+            await update.message.reply_html(
+                goodbye_msg.format(user_mention=left_member.mention_html()),
+                disable_web_page_preview=True
+            )
+        except TelegramError as e:
+            logger.error(f"Failed to send goodbye message: {e}")
 
 # --- هندلرهای مدیریت گروه ---
 async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -661,6 +875,9 @@ def main() -> None:
     # هندلرهای دستورات عمومی
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("points", points_command))
+    application.add_handler(CommandHandler("topusers", top_users_command))
+    application.add_handler(CommandHandler("groupstats", group_stats_command))
     
     # هندلرهای دستورات مدیریت گروه
     application.add_handler(CommandHandler("ban", ban_command))
@@ -676,8 +893,15 @@ def main() -> None:
     application.add_handler(CommandHandler("setrules", setrules_command))
     application.add_handler(CommandHandler("info", info_command))
     
+    # هندلرهای عضو جدید و عضو خارج شده
+    application.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, handle_new_member))
+    application.add_handler(MessageHandler(filters.StatusUpdate.LEFT_CHAT_MEMBER, handle_left_member))
+    
     # هندلر پیام‌ها
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # هندلر دستورات سفارشی
+    application.add_handler(MessageHandler(filters.COMMAND, handle_custom_command))
     
     # راه‌اندازی و ثبت هندلرهای پنل ادمین
     admin_panel.setup_admin_handlers(application)
